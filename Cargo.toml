@@ -1,0 +1,12 @@
+[package]
+name = "koxinga"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "mingInternet_Koxinga_Browser"
+path = "src/main.rs"
+
+[dependencies]
+ming-wm-lib = "0.1.2"
+reqwest = { version = "0.12", features = [ "blocking" ] }
