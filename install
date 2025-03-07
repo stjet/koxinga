@@ -1,0 +1,2 @@
+#!/bin/sh
+cp ./target/release/mingInternet_Koxinga_Browser /usr/local/bin/mingInternet_Koxinga_Browser

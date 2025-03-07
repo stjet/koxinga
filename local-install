@@ -1,2 +1,2 @@
-#!/bin/bash
+#!/bin/sh
 cp ./target/release/mingInternet_Koxinga_Browser ~/.local/bin/mingInternet_Koxinga_Browser

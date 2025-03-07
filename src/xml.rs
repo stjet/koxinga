@@ -2,16 +2,23 @@ use std::vec::Vec;
 use std::boxed::Box;
 use std::collections::HashMap;
 
+use ming_wm_lib::utils::Substring;
+
 //try to be xhtml compliant?
 
 //fuck these mfers. self close with a FUCKING slash man.
 //<meta> is bad, <meta/> is good!!
-const SELF_CLOSING: [&'static str; 7] = ["link", "meta", "input", "img", "br", "hr", "!DOCTYPE"];
+const SELF_CLOSING: [&'static str; 9] = ["link", "meta", "input", "img", "br", "hr", "source", "track", "!DOCTYPE"];
 
 fn is_whitespace(c: char) -> bool {
   c == ' ' || c == '\x09'
 }
 
+fn handle_escaped(s: &str) -> String {
+  s.replace("&nbsp;", " ").replace("&#x27;", "'").to_string()
+}
+
+#[derive(PartialEq)]
 pub enum OutputType {
   StartLink(String),
   EndLink,
@@ -33,7 +40,7 @@ impl Node {
     let mut output = Vec::new();
     let mut link = false;
     if self.text_node {
-      output.push(OutputType::Text(self.tag_name.clone()));
+      output.push(OutputType::Text(handle_escaped(&self.tag_name.clone())));
       return output;
     } else if self.tag_name == "script" || self.tag_name == "style" {
       //ignore script and style tags
@@ -86,7 +93,54 @@ pub fn parse(xml_string: &str) -> Vec<Box<Node>> {
     }
     let c = c.unwrap();
     if let Some(ref mut n) = current_node {
-      if c == ' ' && recording_tag_name && !n.text_node {
+      if n.tag_name == "!--" {
+        //this is a comment... skip!
+        current_node = None;
+        recording_tag_name = false;
+        let mut dash_count = 0;
+        loop {
+          let c2 = chars.next();
+          if c2.is_none() {
+            break;
+          }
+          let c2 = c2.unwrap();
+          if c2 == '>' && dash_count == 2 {
+            break;
+          } else if c2 == '-' {
+            dash_count += 1;
+          } else {
+            dash_count = 0;
+          }
+        }
+      } else if (n.tag_name == "script" || n.tag_name == "style") && !n.text_node {
+        //need to handle this carefully since < and > could be present
+        let mut so_far = String::new();
+        let loc = add_to_parent(&mut top_level_nodes, &parent_location, n.clone());
+        parent_location.push(loc);
+        //won't handle if </script> appears in a string
+        loop {
+          let c2 = chars.next();
+          if c2.is_none() {
+            break;
+          }
+          let c2 = c2.unwrap();
+          so_far += &c2.to_string();
+          let end_len = n.tag_name.len() + 3;
+          if so_far.len() >= end_len {
+            let end = so_far.chars().count();
+            if so_far.substring(end - end_len, end) == "</".to_string() + &n.tag_name + ">" {
+              current_node = None;
+              let mut n2: Node = Default::default();
+              n2.text_node = true;
+              n2.tag_name = so_far.substring(0, end - end_len).to_string();
+              add_to_parent(&mut top_level_nodes, &parent_location, n2);
+              parent_location.pop();
+              recording_tag_name = false;
+              break;
+            }
+          }
+        }
+      } else if c == ' ' && recording_tag_name && !n.text_node {
         recording_tag_name = false;
       } else if c == '>' || (c == '/' && chars.peek().unwrap_or(&' ') == &'>') || (n.text_node && chars.peek().unwrap_or(&' ') == &'<') {
         if n.text_node {
@@ -200,6 +254,24 @@ fn test_close_xml_parse() {
   assert!(nodes[0].children[1].tag_name == "a");
   let nodes = parse("<a>ab</a> <span>woah</span>");
   assert!(nodes[2].tag_name == "span");
+}
+
+#[test]
+fn test_style_script_xml_parse() {
+  let nodes = parse("<p>a b c</p><style>. p ></style><b>woah</b>");
+  assert!(nodes.len() == 3);
+  assert!(nodes[0].tag_name == "p");
+  assert!(nodes[1].tag_name == "style");
+  assert!(nodes[1].children[0].tag_name == ". p >");
+  //
+}
+
+#[test]
+fn test_comments_xml_parse() {
+  let nodes = parse("<p>test</p><!--comment <a>stallman forced me to do this</a><p>--><b> afterwards</b>");
+  assert!(nodes.len() == 2);
+  assert!(nodes[1].tag_name == "b");
+  assert!(nodes[1].children[0].tag_name == " afterwards");
 }
 
 //more tests 100% needed. yoink from news.ycombinator.com and en.wikipedia.org
