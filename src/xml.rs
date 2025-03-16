@@ -15,7 +15,7 @@ fn is_whitespace(c: char) -> bool {
 }
 
 fn handle_escaped(s: &str) -> String {
-  s.replace("&nbsp;", " ").replace("&#x27;", "'").to_string()
+  s.replace("&nbsp;", " ").replace("&#x27;", "'").replace("&quot;", "\"").to_string()
 }
 
 #[derive(PartialEq)]

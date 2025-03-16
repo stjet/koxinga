@@ -1,2 +1,3 @@
 #!/bin/sh
+cp ./koxinga.md ~/.local/bin/ming_docs/window-likes/koxinga.md
 cp ./target/release/mingInternet_Koxinga_Browser ~/.local/bin/mingInternet_Koxinga_Browser

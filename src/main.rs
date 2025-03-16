@@ -186,7 +186,7 @@ impl WindowLike for KoxingaBrowser {
     for p in &self.page {
       let line_no = (p.1 - 2) / LINE_HEIGHT;
       if line_no >= self.top_line_no && line_no < self.top_line_no + max_lines_screen {
-        instructions.push(DrawInstructions::Text([p.0, p.1 - LINE_HEIGHT * self.top_line_no], vec!["nimbus-roman".to_string()], p.2.clone(), if p.3 { theme_info.top_text } else { theme_info.text }, theme_info.background, Some(1), Some(12)));
+        instructions.push(DrawInstructions::Text([p.0, p.1 - LINE_HEIGHT * self.top_line_no], vec!["nimbus-roman".to_string()], p.2.clone(), if p.3 { theme_info.top_text } else { theme_info.text }, theme_info.background, Some(1), Some(11)));
       }
     }
     //mode
@@ -195,8 +195,13 @@ impl WindowLike for KoxingaBrowser {
       bottom_text += &self.url_input;
     } else if self.mode == Mode::Link {
       bottom_text += &self.link_input;
+    } else if self.mode == Mode::Normal && self.dimensions[0] >= 500 {
+      bottom_text += "u (url)";
+      if self.url.is_some() {
+        bottom_text += ", l (link), j (down), k (up)";
+      }
     }
-    instructions.push(DrawInstructions::Text([0, self.dimensions[1] - LINE_HEIGHT], vec!["nimbus-roman".to_string()], bottom_text, theme_info.text, theme_info.background, Some(1), Some(12)));
+    instructions.push(DrawInstructions::Text([0, self.dimensions[1] - LINE_HEIGHT], vec!["nimbus-roman".to_string()], bottom_text, theme_info.text, theme_info.background, Some(1), Some(11)));
     instructions
   }
 
@@ -209,7 +214,7 @@ impl WindowLike for KoxingaBrowser {
   }
 
   fn ideal_dimensions(&self, _dimensions: Dimensions) -> Dimensions {
-    [410, 410]
+    [500, 410]
   }
 
   fn resizable(&self) -> bool {
@@ -275,7 +280,7 @@ impl KoxingaBrowser {
         let mut line = String::new();
         let mut start_x = x;
         for c in s.chars() {
-          if x + 14 > self.dimensions[0] {
+          if x + 12 > self.dimensions[0] {
             //full line, add draw instruction
             self.page.push((start_x, y, line, colour));
             line = String::new();
@@ -284,7 +289,7 @@ impl KoxingaBrowser {
             y += LINE_HEIGHT;
           }
           line += &c.to_string();
-          x += 13;
+          x += 12;
         }
         if line.len() > 0 {
           self.page.push((start_x, y, line, colour));

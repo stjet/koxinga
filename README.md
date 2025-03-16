@@ -11,3 +11,13 @@ Hacker News frontpage:
 Wikipedia article:
 
 ![en.wikipedia.org/wiki/Ming_dynasty](koxinga_wiki.png)
+
+## Building / Installing
+
+After cloning the repo,
+
+```
+cargo build --release
+chmod +x ./install #or ./local-install
+./install
+```
