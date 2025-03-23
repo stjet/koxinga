@@ -38,6 +38,7 @@ enum Mode {
   Normal,
   Url,
   Link,
+  Search,
 }
 
 impl fmt::Display for Mode {
@@ -46,6 +47,7 @@ impl fmt::Display for Mode {
       Mode::Normal => "NORMAL",
       Mode::Url => "URL",
       Mode::Link => "LINK",
+      Mode::Search => "SEARCH",
     })?;
     Ok(())
   }
@@ -58,8 +60,7 @@ struct KoxingaBrowser {
   max_lines: usize,
   top_line_no: usize,
   url: Option<String>,
-  url_input: String,
-  link_input: String,
+  input: String,
   links: Vec<String>,
   top_level_nodes: Vec<Box<Node>>,
   page: Vec<(usize, usize, String, bool)>, //x, y, text, link colour or not
@@ -83,10 +84,14 @@ impl WindowLike for KoxingaBrowser {
             let max_lines_screen = (self.dimensions[1] - 4) / LINE_HEIGHT - 1;
             if key_press.key == 'u' {
               self.mode = Mode::Url;
+              self.input = self.url.clone().unwrap_or(String::new());
               WindowMessageResponse::JustRedraw
             } else if key_press.key == 'l' && self.url.is_some() {
               self.mode = Mode::Link;
               self.calc_page();
+              WindowMessageResponse::JustRedraw
+            } else if key_press.key == 's' {
+              self.mode = Mode::Search;
               WindowMessageResponse::JustRedraw
             } else if key_press.key == 'k' {
               if self.top_line_no > 0 {
@@ -110,65 +115,57 @@ impl WindowLike for KoxingaBrowser {
               WindowMessageResponse::DoNothing
             }
           },
-          Mode::Url => {
-            if key_press.key == '𐘂' { //the enter key
-              if let Some(text) = get(&self.url_input) {
-                self.url = Some(self.url_input.clone());
+          Mode::Url | Mode::Search | Mode::Link => {
+            if key_press.is_enter() && self.input.len() > 0 {
+              let new_url = if self.mode == Mode::Search {
+                "http://frogfind.de/?q=".to_string() + &self.input
+              } else if self.mode == Mode::Link {
+                let link_index = self.input.parse::<usize>().unwrap();
+                let url = self.url.as_ref().unwrap();
+                let mut link;
+                if link_index < self.links.len() {
+                  link = self.links[link_index].clone();
+                  if link.chars().count() >= 2 {
+                    //remove the quotes
+                    link = link.substring(1, link.len() - 1).to_string();
+                  }
+                  if link.starts_with("/") {
+                    link = get_base_url(&url) + &link;
+                  } else if !link.starts_with("http://") && !link.starts_with("https://") {
+                    link = url.clone() + if url.ends_with("/") { "" } else { "/" } + &link;
+                  }
+                } else {
+                  return WindowMessageResponse::DoNothing
+                }
+                link
+              } else {
+                //if Mode::Url
+                self.input.clone()
+              };
+              if let Some(text) = get(&new_url) {
+                self.url = Some(new_url.clone());
                 self.top_line_no = 0;
                 self.top_level_nodes = parse(&text);
+                self.input = String::new();
                 self.calc_page();
                 self.mode = Mode::Normal;
-              }
-            } else if key_press.key == '𐘃' { //escape key
-              self.mode = Mode::Normal;
-            } else if key_press.key == '𐘁' { //backspace
-              if self.url_input.len() > 0 {
-                self.url_input = self.url_input.remove_last();
+                WindowMessageResponse::JustRedraw
               } else {
-                return WindowMessageResponse::DoNothing;
+                WindowMessageResponse::DoNothing
               }
-            } else {
-              self.url_input += &key_press.key.to_string();
-            }
-            WindowMessageResponse::JustRedraw
-          },
-          Mode::Link => {
-            if key_press.key == '𐘂' && self.link_input.len() > 0 { //the enter key
-              let link_index = self.link_input.parse::<usize>().unwrap();
-              let url = self.url.as_ref().unwrap();
-              if link_index < self.links.len() {
-                let mut link = self.links[link_index].clone();
-                if link.chars().count() >= 2 {
-                  //remove the quotes
-                  link = link.substring(1, link.len() - 1).to_string();
-                }
-                if link.starts_with("/") {
-                  link = get_base_url(&url) + &link;
-                } else if !link.starts_with("http://") && !link.starts_with("https://") {
-                  link = url.clone() + if url.ends_with("/") { "" } else { "/" } + &link;
-                }
-                if let Some(text) = get(&link) {
-                  self.url = Some(link.to_string());
-                  self.url_input = link.to_string();
-                  self.top_line_no = 0;
-                  self.top_level_nodes = parse(&text);
-                  self.mode = Mode::Normal;
-                  self.calc_page();
-                }
-                self.link_input = String::new();
+            } else if key_press.is_escape() {
+              let is_link_mode = self.mode == Mode::Link;
+              self.mode = Mode::Normal;
+              if is_link_mode {
+                self.calc_page();
               }
-              self.mode = Mode::Normal;
+              self.input = String::new();
               WindowMessageResponse::JustRedraw
-            } else if key_press.key == '𐘃' { //escape key'
-              self.link_input = String::new();
-              self.mode = Mode::Normal;
-              self.calc_page();
+            } else if key_press.is_backspace() && self.input.len() > 0 {
+              self.input = self.input.remove_last();
               WindowMessageResponse::JustRedraw
-            } else if key_press.key == '𐘁' { //backspace
-              self.link_input = self.link_input.remove_last();
-              WindowMessageResponse::JustRedraw
-            } else if key_press.key.is_ascii_digit() && self.link_input.len() < 10 {
-              self.link_input += &key_press.key.to_string();
+            } else if (self.mode == Mode::Link && key_press.key.is_ascii_digit() && self.input.len() < 10) || (self.mode != Mode::Link && key_press.is_regular()) {
+              self.input += &key_press.key.to_string();
               WindowMessageResponse::JustRedraw
             } else {
               WindowMessageResponse::DoNothing
@@ -191,15 +188,13 @@ impl WindowLike for KoxingaBrowser {
     }
     //mode
     let mut bottom_text = self.mode.to_string() + ": ";
-    if self.mode == Mode::Url {
-      bottom_text += &self.url_input;
-    } else if self.mode == Mode::Link {
-      bottom_text += &self.link_input;
-    } else if self.mode == Mode::Normal && self.dimensions[0] >= 500 {
-      bottom_text += "u (url)";
+    if self.mode == Mode::Normal && self.dimensions[0] >= 500 {
+      bottom_text += "u (url), s (search)";
       if self.url.is_some() {
         bottom_text += ", l (link), j (down), k (up)";
       }
+    } else {
+      bottom_text += &self.input;
     }
     instructions.push(DrawInstructions::Text([0, self.dimensions[1] - LINE_HEIGHT], vec!["nimbus-roman".to_string()], bottom_text, theme_info.text, theme_info.background, Some(1), Some(11)));
     instructions

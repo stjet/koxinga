@@ -1,4 +1,4 @@
-A web browser for [ming-wm](https://github.com/stjet/ming-wm), and developed in it, that aims to support two things: text, and links.
+A web browser for [ming-wm](https://github.com/stjet/ming-wm), and mostly developed in it, that aims to support two things: text, and links.
 
 Yes, slightly inspired by [Vimium](https://vimium.github.io).
 
