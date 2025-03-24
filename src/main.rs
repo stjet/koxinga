@@ -118,7 +118,7 @@ impl WindowLike for KoxingaBrowser {
           Mode::Url | Mode::Search | Mode::Link => {
             if key_press.is_enter() && self.input.len() > 0 {
               let new_url = if self.mode == Mode::Search {
-                "http://frogfind.de/?q=".to_string() + &self.input
+                "https://old-search.marginalia.nu/search?query=".to_string() + &self.input
               } else if self.mode == Mode::Link {
                 let link_index = self.input.parse::<usize>().unwrap();
                 let url = self.url.as_ref().unwrap();
