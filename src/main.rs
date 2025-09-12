@@ -3,15 +3,17 @@ use std::vec;
 use std::fmt;
 use std::boxed::Box;
 
+//use ming_wm_lib::logging::log;
 use ming_wm_lib::window_manager_types::{ DrawInstructions, WindowLike, WindowLikeType };
 use ming_wm_lib::messages::{ WindowMessage, WindowMessageResponse };
 use ming_wm_lib::utils::Substring;
 use ming_wm_lib::framebuffer_types::Dimensions;
 use ming_wm_lib::themes::ThemeInfo;
+use ming_wm_lib::fonts::measure_text;
 use ming_wm_lib::ipc::listen;
 
 mod http;
-use crate::http::get;
+use crate::http::HttpClient;
 mod xml;
 use crate::xml::{ parse, Node, OutputType };
 
@@ -55,6 +57,7 @@ impl fmt::Display for Mode {
 
 #[derive(Default)]
 struct KoxingaBrowser {
+  client: HttpClient,
   dimensions: Dimensions,
   mode: Mode,
   max_lines: usize,
@@ -62,6 +65,7 @@ struct KoxingaBrowser {
   url: Option<String>,
   input: String,
   links: Vec<String>,
+  title: Option<String>,
   top_level_nodes: Vec<Box<Node>>,
   page: Vec<(usize, usize, String, bool)>, //x, y, text, link colour or not
 }
@@ -81,7 +85,7 @@ impl WindowLike for KoxingaBrowser {
       WindowMessage::KeyPress(key_press) => {
         match self.mode {
           Mode::Normal => {
-            let max_lines_screen = (self.dimensions[1] - 4) / LINE_HEIGHT - 1;
+            let max_lines_screen = (self.dimensions[1] - 2) / LINE_HEIGHT - 1;
             if key_press.key == 'u' {
               self.mode = Mode::Url;
               self.input = self.url.clone().unwrap_or(String::new());
@@ -99,7 +103,7 @@ impl WindowLike for KoxingaBrowser {
               }
               WindowMessageResponse::JustRedraw
             } else if key_press.key == 'j' {
-              if self.top_line_no < self.max_lines - max_lines_screen {
+              if self.top_line_no < self.max_lines - max_lines_screen + 1 {
                 self.top_line_no += 1;
                 WindowMessageResponse::JustRedraw
               } else {
@@ -109,7 +113,7 @@ impl WindowLike for KoxingaBrowser {
               self.top_line_no = 0;
               WindowMessageResponse::JustRedraw
             } else if key_press.key == 'G' {
-              self.top_line_no = self.max_lines - max_lines_screen;
+              self.top_line_no = self.max_lines - max_lines_screen + 1;
               WindowMessageResponse::JustRedraw
             } else {
               WindowMessageResponse::DoNothing
@@ -120,6 +124,7 @@ impl WindowLike for KoxingaBrowser {
               let new_url = if self.mode == Mode::Search {
                 "https://old-search.marginalia.nu/search?query=".to_string() + &self.input
               } else if self.mode == Mode::Link {
+                self.mode = Mode::Normal;
                 let link_index = self.input.parse::<usize>().unwrap();
                 let url = self.url.as_ref().unwrap();
                 let mut link;
@@ -142,9 +147,10 @@ impl WindowLike for KoxingaBrowser {
                 //if Mode::Url
                 self.input.clone()
               };
-              if let Some(text) = get(&new_url) {
+              if let Some(text) = self.client.get(&new_url) {
                 self.url = Some(new_url.clone());
                 self.top_line_no = 0;
+                //log(&text);
                 self.top_level_nodes = parse(&text);
                 self.input = String::new();
                 self.calc_page();
@@ -179,11 +185,13 @@ impl WindowLike for KoxingaBrowser {
 
   fn draw(&self, theme_info: &ThemeInfo) -> Vec<DrawInstructions> {
     let mut instructions = Vec::new();
-    let max_lines_screen = (self.dimensions[1] - 4) / LINE_HEIGHT - 1;
+    let max_lines_screen = (self.dimensions[1] - 2) / LINE_HEIGHT - 1;
     for p in &self.page {
       let line_no = (p.1 - 2) / LINE_HEIGHT;
-      if line_no >= self.top_line_no && line_no < self.top_line_no + max_lines_screen {
-        instructions.push(DrawInstructions::Text([p.0, p.1 - LINE_HEIGHT * self.top_line_no], vec!["nimbus-roman".to_string()], p.2.clone(), if p.3 { theme_info.top_text } else { theme_info.text }, theme_info.background, Some(1), Some(11)));
+      if line_no >= self.top_line_no + max_lines_screen {
+        break;
+      } else if line_no >= self.top_line_no && line_no < self.top_line_no + max_lines_screen {
+        instructions.push(DrawInstructions::Text([p.0, p.1 - LINE_HEIGHT * self.top_line_no], vec!["nimbus-roman".to_string()], p.2.clone(), if p.3 { theme_info.top_text } else { theme_info.text }, theme_info.background, Some(1), None));
       }
     }
     //mode
@@ -201,7 +209,12 @@ impl WindowLike for KoxingaBrowser {
   }
 
   fn title(&self) -> String {
-    "Koxinga Browser".to_string()
+    let t = if let Some(title) = &self.title {
+      format!(": {}", title)
+    } else {
+      " Browser".to_string()
+    };
+    "Koxinga".to_string() + &t
   }
 
   fn subtype(&self) -> WindowLikeType {
@@ -223,6 +236,7 @@ impl KoxingaBrowser {
   }
 
   pub fn calc_page(&mut self) {
+    self.title = None;
     self.page = Vec::new();
     self.links = Vec::new();
     let mut outputs = Vec::new();
@@ -230,14 +244,26 @@ impl KoxingaBrowser {
       let html_index = self.top_level_nodes.iter().position(|n| n.tag_name == "html");
       if let Some(html_index) = html_index {
         for n in &self.top_level_nodes[html_index].children {
-          if n.tag_name == "body" {
+          if n.tag_name == "head" {
+            //look for title, if any
+            for hn in &n.children {
+              if hn.tag_name == "title" {
+                if hn.children[0].text_node {
+                  self.title = Some(hn.children[0].tag_name.clone());
+                }
+              }
+            }
+          } else if n.tag_name == "body" {
             outputs = n.to_output();
+            break;
           }
         }
       }
     }
     let mut y = 2;
     let mut x = 2;
+    let mut indent = 0;
+    let mut line_count = 0;
     let mut colour = false;
     let mut link_counter = 0;
     for o in outputs {
@@ -273,31 +299,43 @@ impl KoxingaBrowser {
       if let Some(s) = os {
         //leading and trailing whitespace is probably a mistake
         let mut line = String::new();
+        if x == 2 {
+          x += indent;
+        }
         let mut start_x = x;
         for c in s.chars() {
-          if x + 12 > self.dimensions[0] {
+          let c_width = measure_text(&["nimbus-roman".to_string(), "shippori-mincho".to_string()], c.to_string()).width + 1; //+1 for horiz spacing
+          if x + c_width > self.dimensions[0] {
             //full line, add draw instruction
             self.page.push((start_x, y, line, colour));
             line = String::new();
-            x = 2;
+            x = 2 + indent;
             start_x = x;
             y += LINE_HEIGHT;
+            line_count += 1;
           }
           line += &c.to_string();
-          x += 12;
+          x += c_width;
         }
         if line.len() > 0 {
           self.page.push((start_x, y, line, colour));
         }
       }
+      if let OutputType::Indent(space) = o {
+        indent = space;
+        if x == 2 {
+          x += indent;
+        }
+      }
       if o == OutputType::Newline {
         x = 2;
         y += LINE_HEIGHT;
+        line_count += 1;
       } else if o == OutputType::EndLink {
         colour = false;
       }
     }
-    self.max_lines = (y - 2) / LINE_HEIGHT;
+    self.max_lines = line_count;
   }
 }
 

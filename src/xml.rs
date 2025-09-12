@@ -10,20 +10,38 @@ use ming_wm_lib::utils::Substring;
 //<meta> is bad, <meta/> is good!!
 const SELF_CLOSING: [&'static str; 9] = ["link", "meta", "input", "img", "br", "hr", "source", "track", "!DOCTYPE"];
 
+//not all of them, eg there is intentionally no div
+const BLOCK_LEVEL: [&'static str; 13] = ["p", "br", "li", "tr", "header", "footer", "section", "h1", "h2", "h3", "h4", "h5", "h6"];
+
+const REPLACE: [(&'static str, &'static str); 6] = [
+  ("&nbsp;", " "),
+  ("&#x27;", "'"),
+  ("&quot;", "\""),
+  ("&#x2F;", "/"),
+  ("&gt;", ">"),
+  ("&lt;", "<"),
+];
+
 fn is_whitespace(c: char) -> bool {
   c == ' ' || c == '\x09'
 }
 
 fn handle_escaped(s: &str) -> String {
-  s.replace("&nbsp;", " ").replace("&#x27;", "'").replace("&quot;", "\"").to_string()
+  let mut s = s.to_string();
+  for rp in REPLACE {
+    s = s.replace(rp.0, rp.1);
+  }
+  s
 }
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum OutputType {
   StartLink(String),
   EndLink,
   Text(String),
   Newline,
+  //only support one per line, once indented, will keep being indented until overriden, for now
+  Indent(usize),
 }
 
 #[derive(Clone, Default, Debug, PartialEq)]
@@ -45,14 +63,23 @@ impl Node {
     } else if self.tag_name == "script" || self.tag_name == "style" {
       //ignore script and style tags
       return output;
+    } else if self.tag_name == "li" {
+      output.push(OutputType::Text("-".to_string()));
     } else if let Some(href) = self.attributes.get("href") {
       link = true;
       output.push(OutputType::StartLink(href.to_string()));
+    } else if let Some(indent) = self.attributes.get("indent") {
+      //non-standard indent attribute, basically just to support HN
+      //remove quotes
+      let indent = indent.substring(1, indent.len() - 1);
+      if let Ok(indent) = indent.parse::<usize>() {
+        output.push(OutputType::Indent(indent * 32));
+      }
     }
     for c in &self.children {
       output.extend(c.to_output());
     }
-    if self.tag_name == "p" || self.tag_name == "br" || self.tag_name == "li" || self.tag_name == "tr" {
+    if BLOCK_LEVEL.contains(&self.tag_name.as_str()) {
       output.push(OutputType::Newline);
     } else if link {
       output.push(OutputType::EndLink);
@@ -273,5 +300,14 @@ fn test_comments_xml_parse() {
   assert!(nodes[1].tag_name == "b");
   assert!(nodes[1].children[0].tag_name == " afterwards");
 }
+
+/*#[test]
+fn test_real() {
+  use std::fs::read_to_string;
+  let nodes = parse(&read_to_string("./real_tests/wikipedia.html").unwrap());
+  println!("{:#?}", nodes[1].children);
+  println!("{:?}", nodes[1].children[1].to_output());
+  println!("{}", nodes[1].children[1].tag_name);
+}*/
 
 //more tests 100% needed. yoink from news.ycombinator.com and en.wikipedia.org

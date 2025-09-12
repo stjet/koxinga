@@ -1,10 +1,27 @@
-use reqwest::blocking;
+use reqwest::blocking::Client;
 
-pub fn get(url: &str) -> Option<String> {
-  if let Ok(resp) = blocking::get(url) {
-    if let Ok(text) = resp.text() {
-      return Some(text);
+//for now, just a thin wrapper
+pub struct HttpClient {
+  client: Client,
+}
+
+impl std::default::Default for HttpClient {
+  fn default() -> Self {
+    //for privacy can change to more common one
+    let client = Client::builder().user_agent("Koxinga").build().unwrap();
+    Self {
+      client,
     }
   }
-  None
+}
+
+impl HttpClient {
+  pub fn get(&self, url: &str) -> Option<String> {
+    if let Ok(resp) = self.client.get(url).send() {
+      if let Ok(text) = resp.text() {
+        return Some(text);
+      }
+    }
+    None
+  }
 }
