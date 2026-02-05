@@ -560,7 +560,7 @@ dependencies = [
 
 [[package]]
 name = "koxinga"
-version = "0.1.1"
+version = "0.2.0-beta.0"
 dependencies = [
  "ming-wm-lib",
  "reqwest",
@@ -604,9 +604,9 @@ checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 
 [[package]]
 name = "ming-wm-lib"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2cc80b6035509629ecba931bc6851513fca9fa8bef2be965b8bd437dd00b3930"
+checksum = "729186cd7726de48643a22cd4af3e66d5198c8a6a9e08f214aa4602ce625b2ad"
 
 [[package]]
 name = "miniz_oxide"

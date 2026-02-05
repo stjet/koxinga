@@ -24,4 +24,6 @@ impl HttpClient {
     }
     None
   }
+
+  //todo: form submit (get/post)
 }

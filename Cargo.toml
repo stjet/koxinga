@@ -3,10 +3,16 @@ name = "koxinga"
 version = "0.2.0-beta.0"
 edition = "2021"
 
+[lints.clippy]
+len_zero = "allow"
+comparison_to_empty = "allow"
+redundant_static_lifetimes = "allow"
+vec_box = "allow"
+
+[dependencies]
+ming-wm-lib = "0.2.3"
+reqwest = { version = "0.12", features = [ "blocking" ] }
+
 [[bin]]
 name = "mingInternet_Koxinga_Browser"
 path = "src/main.rs"
-
-[dependencies]
-ming-wm-lib = "0.2.2"
-reqwest = { version = "0.12", features = [ "blocking" ] }

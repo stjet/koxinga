@@ -4,6 +4,8 @@ use std::collections::HashMap;
 
 use ming_wm_lib::utils::Substring;
 
+//use ming_wm_lib::logging::log;
+
 //try to be xhtml compliant?
 
 //fuck these mfers. self close with a FUCKING slash man.
@@ -34,14 +36,39 @@ fn handle_escaped(s: &str) -> String {
   s
 }
 
+pub fn remove_quotes(s: String) -> String {
+  //todo: remove only if quotes
+  let s_len = s.len();
+  if s_len > 1 {
+    s.substring(1, s.len() - 1).to_string()
+  } else {
+    s //length is 0 or 1, can't strip no quotes...
+  }
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum FormSubmitMethod {
+  Get,
+  Post,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct Form {
+  pub action: String, //url
+  pub method: FormSubmitMethod,
+  pub input_names: Vec<String>,
+}
+
 #[derive(Debug, PartialEq)]
 pub enum OutputType {
-  StartLink(String),
+  StartLink(String), //url
   EndLink,
   Text(String),
   Newline,
   //only support one per line, once indented, will keep being indented until overriden, for now
   Indent(usize),
+  TextInput(String),
+  Form(Form),
 }
 
 #[derive(Clone, Default, Debug, PartialEq)]
@@ -57,7 +84,11 @@ impl Node {
   pub fn to_output(&self) -> Vec<OutputType> {
     let mut output = Vec::new();
     let mut link = false;
-    if self.text_node {
+    let mut form = None;
+    let mut input_names = Vec::new();
+    if Some(&"\"true\"".to_string()) == self.attributes.get("aria-hidden") {
+      return output;
+    } else if self.text_node {
       output.push(OutputType::Text(handle_escaped(&self.tag_name.clone())));
       return output;
     } else if self.tag_name == "script" || self.tag_name == "style" {
@@ -70,25 +101,68 @@ impl Node {
       output.push(OutputType::StartLink(href.to_string()));
     } else if let Some(indent) = self.attributes.get("indent") {
       //non-standard indent attribute, basically just to support HN
-      //remove quotes
-      let indent = indent.substring(1, indent.len() - 1);
+      let indent = remove_quotes(indent.to_string());
       if let Ok(indent) = indent.parse::<usize>() {
         output.push(OutputType::Indent(indent * 32));
       }
+    } else if self.tag_name == "input" || self.tag_name == "textarea" {
+      if let Some(name) = self.attributes.get("name") {
+        //unwrap_or is painful so compiler suggested map_or
+        let input_type = remove_quotes(self.attributes.get("type").map_or("\"text\"".to_string(), |v| v.to_string()));
+        if input_type == "text" || input_type == "search" {
+         output.push(OutputType::TextInput(remove_quotes(name.to_string())));
+        }
+      }
+    } else if self.tag_name == "form" {
+      if let Some(action) = self.attributes.get("action") {
+        let method = if let Some(m) = self.attributes.get("method") {
+          let m = remove_quotes(m.to_string()).to_lowercase();
+          match m.as_str() {
+            //todo: POST is currently not implemented. maybe later
+            //"post" => Some(FormSubmitMethod::Post),
+            "get" => Some(FormSubmitMethod::Get),
+            _ => None,
+          }
+        } else {
+          Some(FormSubmitMethod::Get)
+        };
+        if let Some(method) = method {
+          form = Some(Form {
+            action: remove_quotes(action.to_string()),
+            method,
+            input_names: Vec::new(),
+          });
+        }
+      }
     }
     for c in &self.children {
-      output.extend(c.to_output());
+      let children_output = c.to_output();
+      if form.is_some() {
+        for cc in &children_output {
+          if let OutputType::TextInput(name) = cc {
+            input_names.push(name.to_string());
+          }
+        }
+      }
+      output.extend(children_output);
     }
     if BLOCK_LEVEL.contains(&self.tag_name.as_str()) {
       output.push(OutputType::Newline);
     } else if link {
       output.push(OutputType::EndLink);
+    } else if let Some(form) = form {
+      let form = Form {
+        action: form.action,
+        method: form.method,
+        input_names,
+      };
+      output.push(OutputType::Form(form));
     }
     output
   }
 }
 
-fn add_to_parent(top_level_nodes: &mut Vec<Box<Node>>, parent_location: &Vec<usize>, node: Node) -> usize {
+fn add_to_parent(top_level_nodes: &mut Vec<Box<Node>>, parent_location: &[usize], node: Node) -> usize {
   if parent_location.len() == 0 {
     top_level_nodes.push(Box::new(node));
     top_level_nodes.len() - 1
@@ -157,9 +231,7 @@ pub fn parse(xml_string: &str) -> Vec<Box<Node>> {
             let end = so_far.chars().count();
             if so_far.substring(end - end_len, end) == "</".to_string() + &n.tag_name + ">" {
               current_node = None;
-              let mut n2: Node = Default::default();
-              n2.text_node = true;
-              n2.tag_name = so_far.substring(0, end - end_len).to_string();
+              let n2: Node = Node { text_node: true, tag_name: so_far.substring(0, end - end_len).to_string(), ..Default::default() };
               add_to_parent(&mut top_level_nodes, &parent_location, n2);
               parent_location.pop();
               recording_tag_name = false;
@@ -167,7 +239,7 @@ pub fn parse(xml_string: &str) -> Vec<Box<Node>> {
             }
           }
         }
-      } else if c == ' ' && recording_tag_name && !n.text_node {
+      } else if (c == ' ' || c == '\n') && recording_tag_name && !n.text_node {
         recording_tag_name = false;
       } else if c == '>' || (c == '/' && chars.peek().unwrap_or(&' ') == &'>') || (n.text_node && chars.peek().unwrap_or(&' ') == &'<') {
         if n.text_node {
@@ -189,12 +261,14 @@ pub fn parse(xml_string: &str) -> Vec<Box<Node>> {
         current_node = None;
       } else if recording_tag_name {
         n.tag_name += &c.to_string();
-      } else if c == ' ' && !in_string && recording_attribute_value {
+      } else if c == ' ' && !in_string {
         //catch attributes like disabled with no = or value
         if attribute_name.len() > 0 && !recording_attribute_value {
           n.attributes.entry(attribute_name.clone()).insert_entry(String::new());
+        } else if recording_attribute_value {
+          //^this can just be an "else", not an "else if", probably
+          recording_attribute_value = false;
         }
-        recording_attribute_value = false;
         attribute_name = String::new();
       } else if recording_attribute_value {
         if c == '"' {
@@ -215,9 +289,7 @@ pub fn parse(xml_string: &str) -> Vec<Box<Node>> {
         //skip the rest of the </ >
         loop {
           let c2 = chars.next();
-          if c2.is_none() {
-            break;
-          } else if c2.unwrap() == '>' {
+          if c2.is_none() || c2.unwrap() == '>' {
             break;
           }
         }
@@ -232,9 +304,7 @@ pub fn parse(xml_string: &str) -> Vec<Box<Node>> {
         whitespace_only = false;
       }
       //text node
-      let mut n: Node = Default::default();
-      n.tag_name = c.to_string();
-      n.text_node = true;
+      let n: Node = Node { tag_name: c.to_string(), text_node: true, ..Default::default() };
       if chars.peek().unwrap_or(&' ') == &'<' {
         add_to_parent(&mut top_level_nodes, &parent_location, n);
       } else {
@@ -301,6 +371,42 @@ fn test_comments_xml_parse() {
   assert!(nodes[1].children[0].tag_name == " afterwards");
 }
 
+#[test]
+fn test_weird_attr() {
+  //weird order
+  let nodes = parse("<input type=\"text\" disabled name=\"one\">");
+  assert!(nodes[0].attributes.get("type").unwrap() == "\"text\"");
+  assert!(nodes[0].attributes.get("disabled").is_some());
+  assert!(nodes[0].attributes.get("name").unwrap() == "\"one\"");
+  //newlines in tag and shit
+  let nodes = parse("<input
+  title=\"invalid text\"
+
+  name=\"one\">");
+  assert!(nodes[0].tag_name == "input");
+  //assert!(nodes[0].attributes.get("title").unwrap() == "\"invalid text\"\n"); //current has newline at end I think (TODO: fix)
+  //
+  assert!(nodes[0].attributes.get("name").unwrap() == "\"one\"");
+}
+
+#[test]
+fn test_form_parse_and_output() {
+  let nodes = parse("<form method=\"get\" action=\"/test\">
+  <div><input type=\"search\" name=\"search1\"></div>
+  <label>Field 1:</label> test <input type=\"text\" name=\"field1\">
+  <label>Field 2:</label> yeah <input type=\"text\" name=\"field2\">
+</form>");
+  assert!(nodes.len() == 1);
+  assert!(nodes[0].tag_name == "form");
+  assert!(nodes[0].children[0].children[0].tag_name == "input");
+  assert!(nodes[0].children[1].tag_name == "label");
+  assert!(nodes[0].children[3].tag_name == "input");
+  assert!(nodes[0].children[4].tag_name == "label");
+  //check .to_output()
+  //
+}
+
+
 /*#[test]
 fn test_real() {
   use std::fs::read_to_string;
@@ -309,5 +415,3 @@ fn test_real() {
   println!("{:?}", nodes[1].children[1].to_output());
   println!("{}", nodes[1].children[1].tag_name);
 }*/
-
-//more tests 100% needed. yoink from news.ycombinator.com and en.wikipedia.org
