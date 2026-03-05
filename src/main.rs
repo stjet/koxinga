@@ -306,7 +306,7 @@ impl WindowLike for KoxingaBrowser {
             } else if key_press.is_backspace() && self.input.len() > 0 {
               self.input = self.input.remove_last();
               WindowMessageResponse::JustRedraw
-            } else if (self.mode == Mode::Link && key_press.key.is_ascii_digit() && self.input.len() < 10) || (self.mode != Mode::Link && key_press.is_regular()) {
+            } else if ((self.mode == Mode::Link || self.mode == Mode::FormSubmit) && key_press.key.is_ascii_digit() && self.input.len() < 10) || ((self.mode != Mode::Link && self.mode != Mode::FormSubmit) && key_press.is_regular()) {
               self.input += &key_press.key.to_string();
               WindowMessageResponse::JustRedraw
             } else {

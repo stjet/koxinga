@@ -1,6 +1,6 @@
 [package]
 name = "koxinga"
-version = "0.2.0-beta.0"
+version = "1.0.0"
 edition = "2021"
 
 [lints.clippy]
