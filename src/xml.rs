@@ -15,23 +15,43 @@ const SELF_CLOSING: [&'static str; 9] = ["link", "meta", "input", "img", "br", "
 //not all of them, eg there is intentionally no div
 const BLOCK_LEVEL: [&'static str; 13] = ["p", "br", "li", "tr", "header", "footer", "section", "h1", "h2", "h3", "h4", "h5", "h6"];
 
-const REPLACE: [(&'static str, &'static str); 6] = [
+pub const REPLACE: [(&'static str, &'static str); 7] = [
   ("&nbsp;", " "),
   ("&#x27;", "'"),
   ("&quot;", "\""),
   ("&#x2F;", "/"),
   ("&gt;", ">"),
   ("&lt;", "<"),
+  ("&amp;", "&"),
+];
+
+pub const URL_REPLACE: [(&'static str, &'static str); 12] = [
+  ("%22", "\""),
+  ("%2B", "+"),
+  ("%2C", ","),
+  ("%2D", "-"),
+  ("%2F", "/"),
+  ("%3A", ":"),
+  ("%5C", "\\"),
+  ("%5B", "["),
+  ("%5D", "]"),
+  ("%5F", "_"),
+  ("%7B", "{"),
+  ("%7D", "}"),
 ];
 
 fn is_whitespace(c: char) -> bool {
   c == ' ' || c == '\x09'
 }
 
-fn handle_escaped(s: &str) -> String {
+pub fn handle_escaped(s: &str, replace_list: Vec<(&str, &str)>, inverse: bool) -> String {
   let mut s = s.to_string();
-  for rp in REPLACE {
-    s = s.replace(rp.0, rp.1);
+  for rp in replace_list {
+    if !inverse {
+      s = s.replace(rp.0, rp.1);
+    } else {
+      s = s.replace(rp.1, rp.0);
+    }
   }
   s
 }
@@ -54,7 +74,7 @@ pub enum FormSubmitMethod {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Form {
-  pub action: String, //url
+  pub action: Option<String>, //url, if None, defaults to same url
   pub method: FormSubmitMethod,
   pub input_names: Vec<String>,
 }
@@ -67,7 +87,7 @@ pub enum OutputType {
   Newline,
   //only support one per line, once indented, will keep being indented until overriden, for now
   Indent(usize),
-  TextInput(String),
+  TextInput(String, String), //name, default value
   Form(Form),
 }
 
@@ -89,7 +109,7 @@ impl Node {
     if Some(&"\"true\"".to_string()) == self.attributes.get("aria-hidden") {
       return output;
     } else if self.text_node {
-      output.push(OutputType::Text(handle_escaped(&self.tag_name.clone())));
+      output.push(OutputType::Text(handle_escaped(&self.tag_name.clone(), REPLACE.to_vec(), false)));
       return output;
     } else if self.tag_name == "script" || self.tag_name == "style" {
       //ignore script and style tags
@@ -98,7 +118,15 @@ impl Node {
       output.push(OutputType::Text("-".to_string()));
     } else if let Some(href) = self.attributes.get("href") {
       link = true;
-      output.push(OutputType::StartLink(href.to_string()));
+      //check if href is ddg link that fucks us over in lite.duckduckgo.com
+      // //duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.merriam%2Dwebster.com%2Fdictionary%2Ftest&amp;rut=f86942690bea49b300b8ae8d470dbbe18ad217aded1750804e3f33a95da21cf2
+      let href = if href.starts_with("\"//duckduckgo.com/l/?uddg=") {
+        //todo: only take from &amp onward
+        "\"".to_string() + &handle_escaped(&href.chars().skip(26).collect::<String>().split("&amp;").next().unwrap(), URL_REPLACE.to_vec(), false) + "\""
+      } else {
+        href.to_string()
+      };
+      output.push(OutputType::StartLink(href));
     } else if let Some(indent) = self.attributes.get("indent") {
       //non-standard indent attribute, basically just to support HN
       let indent = remove_quotes(indent.to_string());
@@ -109,37 +137,45 @@ impl Node {
       if let Some(name) = self.attributes.get("name") {
         //unwrap_or is painful so compiler suggested map_or
         let input_type = remove_quotes(self.attributes.get("type").map_or("\"text\"".to_string(), |v| v.to_string()));
-        if input_type == "text" || input_type == "search" {
-         output.push(OutputType::TextInput(remove_quotes(name.to_string())));
+        if input_type == "text" || input_type == "search" || input_type == "password" || input_type == "hidden" {
+          let default_value = remove_quotes(self.attributes.get("value").map_or(String::new(), |v| v.to_string()));
+          output.push(OutputType::TextInput(remove_quotes(name.to_string()), default_value));
+        }
+      }
+    } else if self.tag_name == "button" {
+      if Some(&"\"submit\"".to_string()) == self.attributes.get("type") {
+        //we only care about submit buttons with names since we need to send that on form POST submit
+        if let Some(name) = self.attributes.get("name") {
+          let default_value = remove_quotes(self.attributes.get("value").map_or(String::new(), |v| v.to_string()));
+          output.push(OutputType::TextInput(remove_quotes(name.to_string()), default_value));
         }
       }
     } else if self.tag_name == "form" {
-      if let Some(action) = self.attributes.get("action") {
-        let method = if let Some(m) = self.attributes.get("method") {
-          let m = remove_quotes(m.to_string()).to_lowercase();
-          match m.as_str() {
-            //todo: POST is currently not implemented. maybe later
-            //"post" => Some(FormSubmitMethod::Post),
-            "get" => Some(FormSubmitMethod::Get),
-            _ => None,
-          }
-        } else {
-          Some(FormSubmitMethod::Get)
-        };
-        if let Some(method) = method {
-          form = Some(Form {
-            action: remove_quotes(action.to_string()),
-            method,
-            input_names: Vec::new(),
-          });
+      let action = self.attributes.get("action");
+      let method = if let Some(m) = self.attributes.get("method") {
+        let m = remove_quotes(m.to_string()).to_lowercase();
+        match m.as_str() {
+          "post" => Some(FormSubmitMethod::Post),
+          "get" => Some(FormSubmitMethod::Get),
+          _ => None,
         }
+      } else {
+        Some(FormSubmitMethod::Get)
+      };
+      if let Some(method) = method {
+        form = Some(Form {
+          //wikipedia puts &amp; in the action url??? is that how its supposed to be? do I need to worry about href?
+          action: if let Some(action) = action { Some(handle_escaped(&remove_quotes(action.to_string()), REPLACE.to_vec(), false)) } else { None },
+          method,
+          input_names: Vec::new(),
+        });
       }
     }
     for c in &self.children {
       let children_output = c.to_output();
       if form.is_some() {
         for cc in &children_output {
-          if let OutputType::TextInput(name) = cc {
+          if let OutputType::TextInput(name, _) = cc {
             input_names.push(name.to_string());
           }
         }
@@ -186,6 +222,7 @@ pub fn parse(xml_string: &str) -> Vec<Box<Node>> {
   let mut attribute_name = String::new();
   let mut recording_attribute_value = false;
   let mut in_string = false;
+  let mut quote_type = None;
   let mut current_node: Option<Node> = None;
   loop {
     let c = chars.next();
@@ -241,7 +278,7 @@ pub fn parse(xml_string: &str) -> Vec<Box<Node>> {
         }
       } else if (c == ' ' || c == '\n') && recording_tag_name && !n.text_node {
         recording_tag_name = false;
-      } else if c == '>' || (c == '/' && chars.peek().unwrap_or(&' ') == &'>') || (n.text_node && chars.peek().unwrap_or(&' ') == &'<') {
+      } else if (c == '>' || (c == '/' && chars.peek().unwrap_or(&' ') == &'>') || (n.text_node && chars.peek().unwrap_or(&' ') == &'<')) && (!in_string || quote_type == Some(c)) {
         if n.text_node {
           n.tag_name += &c.to_string();
         }
@@ -271,8 +308,12 @@ pub fn parse(xml_string: &str) -> Vec<Box<Node>> {
         }
         attribute_name = String::new();
       } else if recording_attribute_value {
-        if c == '"' {
+        if (c == '"' || c == '\'') && (quote_type == Some(c) || quote_type.is_none()) {
           in_string = *n.attributes.get(&attribute_name).unwrap() == "";
+          quote_type = Some(c);
+          if !in_string {
+            quote_type = None;
+          }
         }
         n.attributes.entry(attribute_name.clone()).and_modify(|s| *s += &c.to_string());
       } else if c == '=' {
@@ -332,6 +373,7 @@ fn test_xml_parse() {
   assert!(nodes[0].children[1].children[0].tag_name == "lorem ipsum");
   assert!(nodes[0].children[2].tag_name == " !!! no way");
   assert!(nodes[1].tag_name == "input");
+  println!("{}", nodes[1].attributes.get("name").unwrap());
   assert!(nodes[1].attributes.get("name").unwrap() == "\"in put\"");
   assert!(nodes[2].tag_name == "div");
   assert!(nodes[2].children.len() == 2);
@@ -406,12 +448,20 @@ fn test_form_parse_and_output() {
   //
 }
 
+#[test]
+fn test_strings_again() {
+  let nodes = parse("<span data-value='woah\"cheeseburgers\"'>Nice</span>");
+  assert!(nodes[0].attributes.get("data-value").unwrap() == "'woah\"cheeseburgers\"'");
+  let nodes = parse("<span data-value=\"woah! ' cheeseburgers'\">Nice</span>");
+  assert!(nodes[0].attributes.get("data-value").unwrap() == "\"woah! ' cheeseburgers'\"");
+}
 
-/*#[test]
+
+#[test]
 fn test_real() {
   use std::fs::read_to_string;
   let nodes = parse(&read_to_string("./real_tests/wikipedia.html").unwrap());
-  println!("{:#?}", nodes[1].children);
+  //println!("{:#?}", nodes);
   println!("{:?}", nodes[1].children[1].to_output());
-  println!("{}", nodes[1].children[1].tag_name);
-}*/
+  //println!("{}", nodes[12323233].children[1].tag_name);
+}

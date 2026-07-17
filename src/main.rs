@@ -1,3 +1,5 @@
+//TODO: RUN CLIPPY LINT
+
 use std::vec::Vec;
 use std::vec;
 use std::fmt;
@@ -16,7 +18,7 @@ use ming_wm_lib::ipc::listen;
 mod http;
 use crate::http::HttpClient;
 mod xml;
-use crate::xml::{ parse, remove_quotes, Form, FormSubmitMethod, Node, OutputType };
+use crate::xml::{ parse, remove_quotes, handle_escaped, Form, FormSubmitMethod, Node, OutputType, REPLACE, URL_REPLACE };
 mod url;
 use crate::url::Url;
 
@@ -30,7 +32,7 @@ enum State {
   Maybeg,
 }
 
-#[derive(Default, PartialEq)]
+#[derive(Default, PartialEq, Clone, Copy)]
 enum Mode {
   #[default]
   Normal,
@@ -88,6 +90,7 @@ struct KoxingaBrowser {
   fonts: Vec<String>,
   mode: Mode,
   state: State,
+  cookies: HashMap<String, HashMap<String, String>>, //cookies for each site
   max_lines: usize,
   top_line_no: usize,
   url: Option<Url>,
@@ -219,9 +222,16 @@ impl WindowLike for KoxingaBrowser {
                   url
                 } else {
                   //if Mode::Url
-                  Url::new(self.input.clone())
+                  //check if starts with http:// or https://
+                  let url = Url::new(self.input.clone());
+                  if !url.valid_scheme {
+                    Url::new(format!("https://lite.duckduckgo.com/lite?q={}", self.input))
+                  } else {
+                    url
+                  }
                 };
-                if let Some(text) = self.client.get(&new_url.to_string()) {
+                if let Some((text, new_new_url)) = self.client.get(&new_url.to_string(), self.cookies.get(&new_url.hostname)) {
+                  let new_url = Url::new(new_new_url);
                   self.change_url(new_url, text);
                   WindowMessageResponse::JustRedraw
                 } else {
@@ -254,18 +264,23 @@ impl WindowLike for KoxingaBrowser {
                   let form_index = self.input.parse::<usize>().unwrap();
                   if form_index < self.forms.len() {
                     let form_info = &self.forms[form_index];
+                    let form_url = if let Some(action) = &form_info.action {
+                      Url::new_maybe_relative(action.to_string(), self.url.clone().unwrap())
+                    } else {
+                      self.url.clone().unwrap()
+                    };
                     match form_info.method {
                       FormSubmitMethod::Get => {
                         //construct url to redirect to
-                        let mut form_url = Url::new_maybe_relative(form_info.action.clone(), self.url.clone().unwrap());
+                        let mut form_url = form_url;
                         //key aka name attr
                         for key in &form_info.input_names {
                           if let Some(value) = self.form_inputs.get(&(form_index, key.clone())) {
                             form_url.append_query(&key, value);
                           }
                         }
-                        //log(&format!("{}", form_url.clone()));
-                        if let Some(text) = self.client.get(&form_url.to_string()) {
+                        if let Some((text, new_new_url)) = self.client.get(&form_url.to_string(), self.cookies.get(&form_url.hostname)) {
+                          let form_url = Url::new(new_new_url);
                           self.change_url(form_url, text);
                           WindowMessageResponse::JustRedraw
                         } else {
@@ -274,8 +289,30 @@ impl WindowLike for KoxingaBrowser {
                       },
                       FormSubmitMethod::Post => {
                         //todo. maybe later
-                        //
-                        WindowMessageResponse::DoNothing
+                        let mut body = String::new();
+                        for key in &form_info.input_names {
+                          if let Some(value) = self.form_inputs.get(&(form_index, key.clone())) {
+                            body += &format!("{}{}={}", if body.len() > 0 { "&" } else { "" }, key, handle_escaped(&handle_escaped(value, REPLACE.to_vec(), false), URL_REPLACE.to_vec(), true).replace(" ", "+"));
+                          }
+                        }
+                        let post_cookies = self.cookies.get(&form_url.hostname);
+                        if let Some((new_url, cookies)) = self.client.post(form_url, body, self.url.clone().unwrap(), post_cookies) {
+                          //add to cookies
+                          for cookie in cookies {
+                            //todo: replace old cookie with same name
+                            let hostname = self.url.clone().unwrap().hostname;
+                            if !self.cookies.contains_key(&hostname) {
+                              self.cookies.insert(hostname.clone(), HashMap::new());
+                            }
+                            self.cookies.get_mut(&hostname).unwrap().insert(cookie.0, cookie.1);
+                          }
+                          if let Some((text, new_url)) = self.client.get(&new_url.to_string(), self.cookies.get(&new_url.hostname)) {
+                            let new_url = Url::new(new_url);
+                            self.change_url(new_url, text);
+                          }
+                        }
+                        self.mode = Mode::Normal;
+                        WindowMessageResponse::JustRedraw
                       },
                     }
                   } else {
@@ -297,9 +334,10 @@ impl WindowLike for KoxingaBrowser {
                 WindowMessageResponse::DoNothing
               }
             } else if key_press.is_escape() {
-              self.mode = Mode::Normal;
               self.input = String::new();
-              if self.mode == Mode::Link || self.mode == Mode::FormSubmit || self.mode == Mode::FormInput {
+              let old_mode = self.mode;
+              self.mode = Mode::Normal;
+              if old_mode == Mode::Link || old_mode == Mode::FormSubmit || old_mode == Mode::FormInput {
                 self.calc_page(false);
               }
               WindowMessageResponse::JustRedraw
@@ -313,6 +351,14 @@ impl WindowLike for KoxingaBrowser {
               WindowMessageResponse::DoNothing
             }
           },
+        }
+      },
+      WindowMessage::CtrlKeyPress(key_press) => {
+        if key_press.key == 'a' {
+          self.input = String::new();
+          WindowMessageResponse::JustRedraw
+        } else {
+          WindowMessageResponse::DoNothing
         }
       },
       _ => WindowMessageResponse::DoNothing,
@@ -387,7 +433,7 @@ impl KoxingaBrowser {
   }
 
   pub fn change_url(&mut self, new_url: Url, text: String) {
-    self.url = Some(new_url);
+    self.url = Some(new_url.clone());
     self.top_line_no = 0;
     self.top_level_nodes = parse(&text);
     self.input = String::new();
@@ -419,6 +465,11 @@ impl KoxingaBrowser {
             outputs = n.to_output();
             break;
           }
+        }
+        //handle if no <body> tag (wtf wikimedia error page)
+        if outputs.is_empty() {
+          //hey, why not at that point...
+          outputs = self.top_level_nodes[html_index].to_output();
         }
       }
     }
@@ -468,15 +519,15 @@ impl KoxingaBrowser {
         } + "Submit Form";
         form_counter += 1;
         Some(t)
-      } else if let OutputType::TextInput(name) = &o {
+      } else if let OutputType::TextInput(name, default_value) = &o {
         subtype = Subtype::TextInput;
         if new_page {
-          self.form_inputs.insert((form_counter, name.to_string()), String::new());
+          self.form_inputs.insert((form_counter, name.to_string()), default_value.to_string());
         }
         let t = if self.mode == Mode::FormInput || self.mode == Mode::FormSubmit {
-          format!("{},{}={}", form_counter.to_string(), name, self.form_inputs.get(&(form_counter, name.to_owned())).unwrap())
+          format!("{},{}={}\n", form_counter.to_string(), name, self.form_inputs.get(&(form_counter, name.to_owned())).unwrap())
         } else {
-          name.to_owned()
+          name.to_owned() + "\n"
         };
         Some(t)
       } else {
@@ -491,7 +542,7 @@ impl KoxingaBrowser {
         let mut start_x = x;
         for c in s.chars() {
           let c_width = measure_text_with_cache(&mut fc_getter, &self.fonts, &c.to_string(), None).width + 1; //+1 for horiz spacing
-          if x + c_width > self.dimensions[0] {
+          if x + c_width > self.dimensions[0] || c == '\n' {
             //full line, add draw instruction
             self.page.push((start_x, y, line, subtype));
             line = String::new();
@@ -500,8 +551,10 @@ impl KoxingaBrowser {
             y += LINE_HEIGHT;
             line_count += 1;
           }
-          line += &c.to_string();
-          x += c_width;
+          if c != '\n' {
+            line += &c.to_string();
+            x += c_width;
+          }
         }
         if line.len() > 0 {
           self.page.push((start_x, y, line, subtype));

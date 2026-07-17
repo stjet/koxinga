@@ -1,11 +1,14 @@
 use std::vec::Vec;
 use std::fmt;
 
+const VALID_SCHEMES: [&'static str; 2] = ["HTTP", "HTTPS"]; //more to come in future?? who knows
+
 //for the moment, we don't care about query params or fragments and the like
 #[derive(Clone)]
 pub struct Url {
   scheme: String, //http or https, probably
-  hostname: String,
+  pub valid_scheme: bool,
+  pub hostname: String,
   path: Vec<String>,
   query: Option<String>, //empty or somethign like ?value1=yes&value2=abcd
 }
@@ -24,14 +27,15 @@ impl Url {
     let mut queries = url.split("?");
     let mut p = queries.next().unwrap().split("://");
     let scheme = p.next().unwrap_or("").to_string();
+    let valid_scheme = VALID_SCHEMES.contains(&scheme.to_uppercase().as_str());
     p = p.next().unwrap_or("").split("/");
     let hostname = p.next().unwrap_or("").to_string();
     let path = p.filter(|s| *s != "").map(|s| s.to_string()).collect();
     let query = match queries.next() {
-      Some(q) => Some(q.to_string()),
+      Some(q) => Some(format!("?{}", q)),
       None => None,
     };
-    Self { scheme, hostname, path, query }
+    Self { scheme, valid_scheme, hostname, path, query }
   }
 
   pub fn new_maybe_relative(url: String, current_url: Url) -> Url {
